@@ -1,0 +1,45 @@
+##
+## Versions are pinned to RedefineNCM_KMP's own catalog.
+##
+## This library is consumed as an included build by that project, so Kotlin, the Compose
+## Multiplatform runtime, AGP and the target set must match it exactly. Kotlin metadata and
+## the Compose compiler plugin are not compatible across minor versions inside one build, and
+## `expect`/`actual` in this module only resolves when the two builds declare the same targets.
+## When bumping a version here, bump it in RedefineNCM_KMP/gradle/libs.versions.toml too.
+##
+[versions]
+agp = "9.0.1"
+android-compileSdk = "36"
+android-minSdk = "24"
+coil = "3.5.0"
+composeMultiplatform = "1.11.1"
+jna = "5.14.0"
+kotlin = "2.4.0"
+kotlinx-coroutines = "1.11.0"
+kotlinx-serialization = "1.11.0"
+material3 = "1.11.0-alpha07"
+xmlutil = "0.91.3"
+
+[libraries]
+kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
+compose-runtime = { module = "org.jetbrains.compose.runtime:runtime", version.ref = "composeMultiplatform" }
+compose-foundation = { module = "org.jetbrains.compose.foundation:foundation", version.ref = "composeMultiplatform" }
+compose-ui = { module = "org.jetbrains.compose.ui:ui", version.ref = "composeMultiplatform" }
+compose-material3 = { module = "org.jetbrains.compose.material3:material3", version.ref = "material3" }
+# Coil 3 — the artwork layer behind the lyric viewport.
+coil-compose = { module = "io.coil-kt.coil3:coil-compose", version.ref = "coil" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinx-coroutines" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinx-coroutines" }
+# Web word/grapheme segmentation reads Intl.Segmenter results back as JSON.
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
+# Streaming XML parser behind the TTML lyric parser.
+xmlutil-core = { module = "io.github.pdvrieze.xmlutil:core", version.ref = "xmlutil" }
+# Reads the Windows "reduce animations" system setting through SystemParametersInfo.
+jna = { module = "net.java.dev.jna:jna", version.ref = "jna" }
+jna-platform = { module = "net.java.dev.jna:jna-platform", version.ref = "jna" }
+
+[plugins]
+androidMultiplatformLibrary = { id = "com.android.kotlin.multiplatform.library", version.ref = "agp" }
+composeMultiplatform = { id = "org.jetbrains.compose", version.ref = "composeMultiplatform" }
+composeCompiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
