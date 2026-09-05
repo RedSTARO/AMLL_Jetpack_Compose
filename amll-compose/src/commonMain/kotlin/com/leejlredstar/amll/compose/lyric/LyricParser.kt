@@ -271,7 +271,8 @@ object LyricParser {
         return milliseconds.roundToLong()
     }
 
-    internal fun formatLrcTimestamp(timeMs: Long): String {
+    /** Renders [timeMs] as an LRC `[mm:ss.SSS]` tag, for callers writing LRC back out. */
+    fun formatLrcTimestamp(timeMs: Long): String {
         val safe = timeMs.coerceAtLeast(0L)
         val totalSeconds = safe / 1000L
         val minutes = totalSeconds / 60L
