@@ -895,6 +895,64 @@ class AmllWordRendererTest {
         }
     }
 
+    @Test
+    fun emphasisEndTimeIsWhereTheLastGlyphSettlesAfterItsLineEnded() {
+        // "table": 1 020 ms, five graphemes, the line's last word, 1 000 ms into the line.
+        fun frameAt(positionMs: Double) = computeAmllEmphasisFrame(
+            positionMs = positionMs,
+            mergedStartTimeMs = 1_000.0,
+            mergedEndTimeMs = 2_020.0,
+            characterIndex = 4,
+            characterCount = 5,
+            anchorCharacterCount = 5,
+            isLastWordChunk = true,
+            isBackground = false,
+            lineStartTimeMs = 0.0,
+        )
+        val endMs = computeAmllEmphasisEndTimeMs(
+            mergedStartTimeMs = 1_000.0,
+            mergedEndTimeMs = 2_020.0,
+            lastCharacterIndex = 4,
+            anchorCharacterCount = 5,
+            isLastWordChunk = true,
+            lineStartTimeMs = 0.0,
+        )
+        // duration 1 224 ms; last glyph delay 1 000 + 4 × 1 224 / 2.5 / 5; float ends 1.4 × 1 224
+        // after starting 400 ms before the glow.
+        assertClose(1_000.0 + 391.68 + 1_224.0 * 1.4 - 400.0, endMs, tolerance = 1e-6)
+
+        // Where the line ends, the last glyph is still raised: freezing here was the bug.
+        val atLineEnd = frameAt(2_020.0)
+        assertTrue(atLineEnd.scale > 1.0, "scale=${atLineEnd.scale}")
+        assertTrue(atLineEnd.glowAlpha > 0.0, "glow=${atLineEnd.glowAlpha}")
+
+        // Just before the end it is still settling, and at the end it is neutral.
+        val settling = frameAt(endMs - 200.0)
+        assertTrue(settling.floatOffsetYEm != 0.0, "float=${settling.floatOffsetYEm}")
+        val settled = frameAt(endMs)
+        assertClose(1.0, settled.scale)
+        assertClose(0.0, settled.offsetXEm)
+        assertClose(0.0, settled.offsetYEm)
+        assertClose(0.0, settled.floatOffsetYEm)
+        assertClose(0.0, settled.glowAlpha)
+        assertClose(0.0, settled.underlyingStyleWeight)
+    }
+
+    @Test
+    fun emphasisEndTimeFallsBackToTheLineStartForUnusableTimes() {
+        assertEquals(
+            5_000.0,
+            computeAmllEmphasisEndTimeMs(
+                mergedStartTimeMs = Double.NaN,
+                mergedEndTimeMs = 1.0,
+                lastCharacterIndex = 0,
+                anchorCharacterCount = 1,
+                isLastWordChunk = false,
+                lineStartTimeMs = 5_000.0,
+            ),
+        )
+    }
+
     private fun assertClose(
         expected: Double,
         actual: Double,

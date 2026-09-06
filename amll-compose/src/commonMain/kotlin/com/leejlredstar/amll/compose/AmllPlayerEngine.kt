@@ -773,7 +773,7 @@ internal data class AmllTimeUpdateResult(
     val groupsToEnable: List<Int>,
     val groupsToDisable: List<Int>,
     /**
-     * Inactive word canvases use a coarse playback snapshot instead of observing the 60 Hz clock.
+     * Inactive word canvases use a coarse playback snapshot instead of observing the lyric clock.
      * Refresh it only when the clock crosses lyric state or moves discontinuously.
      */
     val shouldRefreshInactiveWords: Boolean = false,
@@ -1010,7 +1010,7 @@ internal class AmllPlayerEngine(
         lastLayoutResult = result
         timelineState.initialLayoutFinished = true
         // A seek changes the parameters of one layout pass. Previously the per-frame host
-        // cleared this on its next setTime(false); the decoupled 60 Hz timeline must also work
+        // cleared this on its next setTime(false); the decoupled lyric timeline must also work
         // while paused or at end-of-track, when no later position emission is guaranteed.
         timelineState.isSeeking = false
         frameDirty = true

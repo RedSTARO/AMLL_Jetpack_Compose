@@ -61,6 +61,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -799,6 +800,32 @@ internal fun computeAmllEmphasisFrame(
     )
 }
 
+/**
+ * When the last Web Animation of an emphasized word reaches its final authored keyframe.
+ *
+ * `initEmphasizeAnimation()` starts glyph `i` at `delay + i · duration / 2.5 / anchors` with a
+ * glow lasting `duration` and a float that starts 400 ms earlier and lasts `1.4 × duration`.
+ * `disable()` reverses only `float-word`, so both keep playing after the line ends, and
+ * `fill: both` then holds the neutral last keyframe.
+ */
+internal fun computeAmllEmphasisEndTimeMs(
+    mergedStartTimeMs: Double,
+    mergedEndTimeMs: Double,
+    lastCharacterIndex: Int,
+    anchorCharacterCount: Int,
+    isLastWordChunk: Boolean,
+    lineStartTimeMs: Double,
+): Double {
+    var duration = max(1_000.0, mergedEndTimeMs - mergedStartTimeMs)
+    if (isLastWordChunk) duration *= 1.2
+    val anchorCount = max(1, anchorCharacterCount)
+    val baseDelay = max(0.0, mergedStartTimeMs - lineStartTimeMs)
+    val characterDelay =
+        baseDelay + (duration / 2.5 / anchorCount) * max(0, lastCharacterIndex)
+    val end = lineStartTimeMs + characterDelay + max(duration, duration * 1.4 - 400.0)
+    return if (end.isFinite()) end else lineStartTimeMs
+}
+
 private fun sampleAmllAuthoredKeyframes(
     rawProgress: Double,
     valueAtAuthoredOffset: (Double) -> Double,
@@ -1160,7 +1187,8 @@ private data class AmllAtomParentDataModifier(
 
 /**
  * Inactive atoms only need one deterministic terminal sample. This keeps them detached from the
- * 60 Hz presentation clock while still allowing a seek across the line to reset or complete them.
+ * per-frame presentation clock while still allowing a seek across the line to reset or complete
+ * them.
  */
 internal fun resolveAmllInactiveAtomPositionMs(
     playbackPositionMs: Double,
@@ -1857,6 +1885,30 @@ private fun AmllWordAtom(
     ) {
         mutableStateOf(active)
     }
+    // `disable()` reverses only `float-word`. The emphasize-word glow and float keep playing on
+    // the document timeline, so a word that is still rising when its line ends settles instead
+    // of freezing there. The atom stays on the live clock until its last keyframe has played.
+    val emphasisEndTimeMs = remember(atom, textLayout.glyphs.size) {
+        if (atom.emphasize && atom.isDynamic) {
+            computeAmllEmphasisEndTimeMs(
+                mergedStartTimeMs = atom.chunkStartTimeMs,
+                mergedEndTimeMs = atom.chunkEndTimeMs,
+                lastCharacterIndex = atom.characterOffset + textLayout.glyphs.lastIndex,
+                anchorCharacterCount = atom.emphasisAnchorCount,
+                isLastWordChunk = atom.isLastWordChunk,
+                lineStartTimeMs = atom.lineStartTimeMs,
+            )
+        } else {
+            atom.lineStartTimeMs
+        }
+    }
+    var emphasisLive by remember(
+        atom.startTimeMs,
+        atom.endTimeMs,
+        atom.isDynamic,
+    ) {
+        mutableStateOf(false)
+    }
     LaunchedEffect(active, atom.startTimeMs, atom.endTimeMs, atom.isDynamic) {
         val wasActive = previousActive
         if (wasActive && !active && atom.isDynamic) {
@@ -1868,6 +1920,17 @@ private fun AmllWordAtom(
             )
             reverseNormalFloatProgress.snapTo(progress.toFloat())
             previousActive = false
+            if (atom.emphasize && snapshotTimeMs < emphasisEndTimeMs) {
+                emphasisLive = true
+                launch {
+                    snapshotFlow { positionState.value.toDouble() }
+                        .first { positionMs ->
+                            positionMs >= emphasisEndTimeMs ||
+                                positionMs < atom.lineStartTimeMs
+                        }
+                    emphasisLive = false
+                }
+            }
             val reverseDurationMs = (
                 progress * max(1_000.0, atom.endTimeMs - atom.startTimeMs)
                 ).coerceIn(0.0, Int.MAX_VALUE.toDouble()).roundToInt()
@@ -1882,6 +1945,7 @@ private fun AmllWordAtom(
             }
         } else {
             previousActive = active
+            emphasisLive = false
             if (active || !atom.isDynamic) {
                 reverseNormalFloatProgress.snapTo(0f)
             }
@@ -1902,8 +1966,8 @@ private fun AmllWordAtom(
         val brightMaskAlpha = visibleMaskAlpha.brightAlpha.toFloat()
         val darkMaskAlpha = visibleMaskAlpha.darkAlpha.toFloat()
         // Future and completed atoms have deterministic terminal frames. Subscribing every atom
-        // in the song to the 60 Hz playback position forced off-screen canvases to redraw.
-        val livePositionMs = if (active || previousActive) {
+        // in the song to the playback position forced off-screen canvases to redraw.
+        val livePositionMs = if (active || previousActive || emphasisLive) {
             positionState.value.toDouble()
         } else {
             null
@@ -1934,7 +1998,13 @@ private fun AmllWordAtom(
             )
         }
         val maskPositionMs = livePositionMs ?: terminalPositionMs
-        val elementAnimationPositionMs = livePositionMs ?: terminalPositionMs
+        // A completed emphasized word has played every keyframe; `fill: both` holds the last one.
+        val elementAnimationPositionMs = livePositionMs
+            ?: if (atom.emphasize && terminalPositionMs >= atom.endTimeMs) {
+                max(terminalPositionMs, emphasisEndTimeMs)
+            } else {
+                terminalPositionMs
+            }
         val maskFrame = if (atom.isDynamic && maskTimeline != null) {
             sampleAmllWebMaskTimeline(
                 timeline = maskTimeline,
