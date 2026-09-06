@@ -1156,10 +1156,14 @@ fun AmllLyricViewport(
                         focusedIndex = focusedKeyboardIndex,
                         focusVisible = keyboardFocusVisible,
                     ),
-                    accessibilityLabel = amllLyricGroupAccessibilityLabel(
-                        group = group,
-                        isNonDynamic = engine.isNonDynamic,
-                    ),
+                    // Joined from every word of the group; the viewport body recomposes on
+                    // each active-line change, which must not rebuild 70 strings.
+                    accessibilityLabel = remember(group, engine.isNonDynamic) {
+                        amllLyricGroupAccessibilityLabel(
+                            group = group,
+                            isNonDynamic = engine.isNonDynamic,
+                        )
+                    },
                     onFocusChanged = { isFocused ->
                         if (isFocused) {
                             focusedKeyboardIndex = index

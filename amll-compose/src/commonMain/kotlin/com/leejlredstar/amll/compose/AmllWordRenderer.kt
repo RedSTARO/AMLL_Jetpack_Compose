@@ -44,6 +44,7 @@ import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.ParentDataModifier
@@ -1909,6 +1910,7 @@ private fun AmllWordAtom(
     ) {
         mutableStateOf(false)
     }
+    val maskResources = remember { AmllMaskLayerResources() }
     LaunchedEffect(active, atom.startTimeMs, atom.endTimeMs, atom.isDynamic) {
         val wasActive = previousActive
         if (wasActive && !active && atom.isDynamic) {
@@ -2030,6 +2032,7 @@ private fun AmllWordAtom(
                     atom = atom,
                     textLayout = textLayout,
                     maskFrame = maskFrame,
+                    maskResources = maskResources,
                     nowMs = elementAnimationPositionMs,
                     normalFloatEm = normalFloat,
                     fontSizePx = fontSizePx,
@@ -2044,6 +2047,7 @@ private fun AmllWordAtom(
                     atom = atom,
                     textLayout = textLayout,
                     maskFrame = maskFrame,
+                    maskResources = maskResources,
                     nowMs = elementAnimationPositionMs,
                     normalFloatEm = normalFloat,
                     fontSizePx = fontSizePx,
@@ -2068,6 +2072,7 @@ private fun AmllWordAtom(
                             maskFrame != null -> drawHostMaskedText(
                                 layoutResult = wholeWord,
                                 maskFrame = maskFrame,
+                                maskResources = maskResources,
                                 textColor = if (active) {
                                     Color.White.copy(alpha = 0.98f)
                                 } else {
@@ -2102,6 +2107,7 @@ private fun DrawScope.drawStructuredAmllAtom(
     atom: AmllRenderAtom,
     textLayout: AmllAtomTextLayout,
     maskFrame: AmllWebMaskFrame?,
+    maskResources: AmllMaskLayerResources,
     nowMs: Double,
     normalFloatEm: Double,
     fontSizePx: Float,
@@ -2177,6 +2183,7 @@ private fun DrawScope.drawStructuredAmllAtom(
                     height = textLayout.heightPx.toFloat(),
                 ),
                 overflowPaddingPx = overflowPaddingPx,
+                maskResources = maskResources,
                 drawContent = drawContents,
             )
         } else {
@@ -2233,6 +2240,7 @@ private fun DrawScope.drawEmphasizedAtom(
     atom: AmllRenderAtom,
     textLayout: AmllAtomTextLayout,
     maskFrame: AmllWebMaskFrame?,
+    maskResources: AmllMaskLayerResources,
     nowMs: Double,
     normalFloatEm: Double,
     fontSizePx: Float,
@@ -2257,6 +2265,7 @@ private fun DrawScope.drawEmphasizedAtom(
                 height = textLayout.heightPx.toFloat(),
             ),
             overflowPaddingPx = overflowPaddingPx,
+            maskResources = maskResources,
         ) {
             drawEmphasizedGlyphs(
                 atom = atom,
@@ -2409,6 +2418,7 @@ private fun DrawScope.drawShadowText(
 private fun DrawScope.drawHostMaskedText(
     layoutResult: TextLayoutResult,
     maskFrame: AmllWebMaskFrame,
+    maskResources: AmllMaskLayerResources,
     textColor: Color,
     brightMaskAlpha: Float,
     darkMaskAlpha: Float,
@@ -2429,6 +2439,7 @@ private fun DrawScope.drawHostMaskedText(
             height = topLeft.y + layoutResult.size.height,
         ),
         overflowPaddingPx = overflowPaddingPx,
+        maskResources = maskResources,
     ) {
         // The second CSS shadow is behind the first. Android's inactive root shadow is a separate
         // inherited declaration, hence its different y-offset, radius and alpha.
@@ -2465,6 +2476,48 @@ private fun DrawScope.drawHostMaskedText(
 }
 
 /**
+ * The Skia objects one atom's mask layer needs, kept across frames.
+ *
+ * The layer used to take a fresh `Paint` and a fresh gradient `Brush` every frame. A
+ * `ShaderBrush` caches its shader only while the same instance is reused, so each atom sent
+ * three objects to the Skia cleaner per frame — thousands a second on a high-refresh desktop,
+ * and each a phantom reference for the collector to process. The gradient is now authored
+ * over `[0, fade]` and drawn translated to the frame's boundary, so it is rebuilt only when
+ * the alphas or the fade width change, which happens during the mask-alpha transition and
+ * never while a line merely plays.
+ */
+internal class AmllMaskLayerResources {
+    val layerPaint: Paint = Paint()
+    private var fadeBrush: Brush? = null
+    private var brightAlpha = Float.NaN
+    private var darkAlpha = Float.NaN
+    private var fadeWidthPx = Float.NaN
+
+    fun fadeBrush(brightAlpha: Float, darkAlpha: Float, fadeWidthPx: Float): Brush {
+        val cached = fadeBrush
+        if (
+            cached != null &&
+            brightAlpha == this.brightAlpha &&
+            darkAlpha == this.darkAlpha &&
+            fadeWidthPx == this.fadeWidthPx
+        ) {
+            return cached
+        }
+        this.brightAlpha = brightAlpha
+        this.darkAlpha = darkAlpha
+        this.fadeWidthPx = fadeWidthPx
+        return Brush.horizontalGradient(
+            colors = listOf(
+                Color.Black.copy(alpha = brightAlpha),
+                Color.Black.copy(alpha = darkAlpha),
+            ),
+            startX = 0f,
+            endX = fadeWidthPx,
+        ).also { fadeBrush = it }
+    }
+}
+
+/**
  * CSS mask-image applies after text color, every text-shadow and filter output have been composed.
  * A saved layer followed by DstIn reproduces that ordering; drawing a dark text then a bright
  * overlay does not, because the two shadow stacks would retain different alpha.
@@ -2475,6 +2528,7 @@ private fun DrawScope.withAmllMaskLayer(
     darkMaskAlpha: Float,
     contentSize: Size,
     overflowPaddingPx: Float,
+    maskResources: AmllMaskLayerResources,
     drawContent: DrawScope.() -> Unit,
 ) {
     val layerBounds = Rect(
@@ -2484,24 +2538,26 @@ private fun DrawScope.withAmllMaskLayer(
         bottom = contentSize.height + overflowPaddingPx,
     )
     drawIntoCanvas { canvas ->
-        canvas.saveLayer(layerBounds, Paint())
+        canvas.saveLayer(layerBounds, maskResources.layerPaint)
     }
     drawContent()
     val start = maskFrame.brightBoundaryPx.toFloat()
-    val end = start + maskFrame.fadeWidthPx.toFloat().coerceAtLeast(0.001f)
-    drawRect(
-        brush = Brush.horizontalGradient(
-            colors = listOf(
-                Color.Black.copy(alpha = brightMaskAlpha.coerceIn(0f, 1f)),
-                Color.Black.copy(alpha = darkMaskAlpha.coerceIn(0f, 1f)),
-            ),
-            startX = start,
-            endX = end,
-        ),
-        topLeft = layerBounds.topLeft,
-        size = layerBounds.size,
-        blendMode = BlendMode.DstIn,
+    val fadeWidthPx = maskFrame.fadeWidthPx.toFloat().coerceAtLeast(0.001f)
+    val brush = maskResources.fadeBrush(
+        brightAlpha = brightMaskAlpha.coerceIn(0f, 1f),
+        darkAlpha = darkMaskAlpha.coerceIn(0f, 1f),
+        fadeWidthPx = fadeWidthPx,
     )
+    // The gradient spans [0, fade] in local space; shifting the canvas puts its bright edge on
+    // the frame's boundary, and the rect shifts back so it still covers the whole layer.
+    translate(left = start) {
+        drawRect(
+            brush = brush,
+            topLeft = Offset(layerBounds.left - start, layerBounds.top),
+            size = layerBounds.size,
+            blendMode = BlendMode.DstIn,
+        )
+    }
     drawIntoCanvas { canvas ->
         canvas.restore()
     }

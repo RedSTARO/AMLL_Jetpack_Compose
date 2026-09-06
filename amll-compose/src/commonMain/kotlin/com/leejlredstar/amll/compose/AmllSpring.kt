@@ -36,14 +36,25 @@ internal data class AmllSpringParameters(
  * The implementation intentionally retains the exact 0.5.2 state transition order, including
  * its queued-parameter behavior and its signed velocity/acceleration arrival checks.
  */
+/**
+ * A scalar function of time in seconds.
+ *
+ * A `fun interface` with primitive parameters compiles to `double invoke(double)` on the JVM;
+ * a `(Double) -> Double` lambda goes through `Function1<Double, Double>` and boxes both the
+ * argument and the result. Every group evaluates three of these per frame.
+ */
+internal fun interface AmllTimeFunction {
+    operator fun invoke(seconds: Double): Double
+}
+
 internal class AmllSpring(currentPosition: Double = 0.0) {
     private var currentPositionValue = currentPosition
     private var targetPosition = currentPosition
     private var currentTimeSeconds = 0.0
     private var parameters = AmllSpringParameters()
-    private var currentSolver: (Double) -> Double = { targetPosition }
-    private var velocityAt: (Double) -> Double = { 0.0 }
-    private var accelerationAt: (Double) -> Double = { 0.0 }
+    private var currentSolver = AmllTimeFunction { targetPosition }
+    private var velocityAt = AmllTimeFunction { 0.0 }
+    private var accelerationAt = AmllTimeFunction { 0.0 }
     private var queuedParameters: QueuedParameters? = null
     private var queuedPosition: QueuedPosition? = null
     private var isAtRest = true
@@ -76,9 +87,9 @@ internal class AmllSpring(currentPosition: Double = 0.0) {
     fun setPosition(position: Double) {
         targetPosition = position
         currentPositionValue = position
-        currentSolver = { targetPosition }
-        velocityAt = { 0.0 }
-        accelerationAt = { 0.0 }
+        currentSolver = AmllTimeFunction { targetPosition }
+        velocityAt = AmllTimeFunction { 0.0 }
+        accelerationAt = AmllTimeFunction { 0.0 }
         isAtRest = true
     }
 
@@ -181,7 +192,7 @@ internal fun solveAmllSpringPosition(
     to: Double,
     delaySeconds: Double = 0.0,
     parameters: AmllSpringParameters = AmllSpringParameters(),
-): (Double) -> Double {
+): AmllTimeFunction {
     val soft = parameters.soft ?: false
     val stiffness = parameters.stiffness ?: 100.0
     val damping = parameters.damping ?: 10.0
@@ -191,7 +202,7 @@ internal fun solveAmllSpringPosition(
     if (soft || 1.0 <= damping / (2.0 * sqrt(stiffness * mass))) {
         val angularFrequency = -sqrt(stiffness / mass)
         val leftover = -angularFrequency * delta - velocity
-        return { inputSeconds ->
+        return AmllTimeFunction { inputSeconds ->
             val timeSeconds = inputSeconds - delaySeconds
             if (timeSeconds < 0.0) {
                 from
@@ -208,7 +219,7 @@ internal fun solveAmllSpringPosition(
     val dampedFrequencyPerMass = (0.5 * dampingFrequency) / mass
     val dampingPerMass = -(0.5 * damping) / mass
 
-    return { inputSeconds ->
+    return AmllTimeFunction { inputSeconds ->
         val timeSeconds = inputSeconds - delaySeconds
         if (timeSeconds < 0.0) {
             from
@@ -223,7 +234,7 @@ internal fun solveAmllSpringPosition(
     }
 }
 
-private fun amllDerivative(function: (Double) -> Double): (Double) -> Double = { input ->
+private fun amllDerivative(function: AmllTimeFunction): AmllTimeFunction = AmllTimeFunction { input ->
     (function(input + DERIVATIVE_STEP) - function(input - DERIVATIVE_STEP)) /
         (2.0 * DERIVATIVE_STEP)
 }
