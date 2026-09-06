@@ -1182,7 +1182,7 @@ internal fun AmllTimedWordLine(
     baseFontSizeSp: Float,
     androidPresentation: Boolean,
     isNonDynamic: Boolean = line.words.size <= 1,
-    maskScale: Double = if (active) 1.0 else 0.97,
+    maskScale: State<Double>,
     maskRenderMode: AmllLineRenderMode = if (active) {
         AmllLineRenderMode.GRADIENT
     } else {
@@ -1441,20 +1441,30 @@ internal fun AmllTimedWordLine(
             }
         }
     }
-    val latestMaskScale by rememberUpdatedState(maskScale)
     val latestMaskRenderMode by rememberUpdatedState(maskRenderMode)
-    var maskAlphaState by remember(line.id) { mutableStateOf(AmllMaskAlphaState()) }
+    // Read by every atom's draw block, so an alpha step redraws the line's canvases without
+    // recomposing them.
+    val maskAlphaHolder = remember(line.id, animateMaskAlpha) {
+        mutableStateOf(
+            if (animateMaskAlpha) {
+                AmllMaskAlphaState()
+            } else {
+                targetAmllMaskAlpha(scale = maskScale.value, renderMode = maskRenderMode)
+            },
+        )
+    }
+    var maskAlphaState by maskAlphaHolder
     if (animateMaskAlpha) {
         LaunchedEffect(line.id) {
             while (true) {
                 val currentTarget = targetAmllMaskAlpha(
-                    scale = latestMaskScale,
+                    scale = maskScale.value,
                     renderMode = latestMaskRenderMode,
                 )
                 if (maskAlphaState == currentTarget) {
                     snapshotFlow {
                         targetAmllMaskAlpha(
-                            scale = latestMaskScale,
+                            scale = maskScale.value,
                             renderMode = latestMaskRenderMode,
                         )
                     }.first { target -> target != maskAlphaState }
@@ -1463,7 +1473,7 @@ internal fun AmllTimedWordLine(
                 var previousFrameNanos = withFrameNanos { it }
                 while (true) {
                     val target = targetAmllMaskAlpha(
-                        scale = latestMaskScale,
+                        scale = maskScale.value,
                         renderMode = latestMaskRenderMode,
                     )
                     if (maskAlphaState == target) break
@@ -1480,24 +1490,14 @@ internal fun AmllTimedWordLine(
         }
     } else {
         LaunchedEffect(line.id, maskScale, maskRenderMode) {
-            maskAlphaState = targetAmllMaskAlpha(
-                scale = maskScale,
-                renderMode = maskRenderMode,
-            )
+            snapshotFlow { maskScale.value }.collect { scale ->
+                maskAlphaState = targetAmllMaskAlpha(
+                    scale = scale,
+                    renderMode = maskRenderMode,
+                )
+            }
         }
     }
-    val renderedMaskAlphaState = if (animateMaskAlpha) {
-        maskAlphaState
-    } else {
-        targetAmllMaskAlpha(maskScale, maskRenderMode)
-    }
-    val visibleMaskAlpha = visibleAmllMaskAlpha(
-        animated = renderedMaskAlphaState,
-        active = active,
-        androidPresentation = androidPresentation,
-    )
-    val visibleBrightMaskAlpha = visibleMaskAlpha.brightAlpha.toFloat()
-    val visibleDarkMaskAlpha = visibleMaskAlpha.darkAlpha.toFloat()
     val maskMetrics = remember(atoms, layouts, fontSizePx) {
         atoms.mapIndexedNotNull { index, atom ->
             atom.maskWordIndex?.let { maskIndex ->
@@ -1544,8 +1544,7 @@ internal fun AmllTimedWordLine(
                     active = active,
                     baseFontSizeSp = baseFontSizeSp,
                     androidPresentation = androidPresentation,
-                    brightMaskAlpha = visibleBrightMaskAlpha,
-                    darkMaskAlpha = visibleDarkMaskAlpha,
+                    maskAlpha = maskAlphaHolder,
                     modifier = Modifier.then(
                         AmllAtomParentDataModifier(
                             AmllAtomParentData(
@@ -1828,8 +1827,7 @@ private fun AmllWordAtom(
     active: Boolean,
     baseFontSizeSp: Float,
     androidPresentation: Boolean,
-    brightMaskAlpha: Float,
-    darkMaskAlpha: Float,
+    maskAlpha: State<AmllMaskAlphaState>,
     modifier: Modifier,
 ) {
     val density = LocalDensity.current
@@ -1896,6 +1894,13 @@ private fun AmllWordAtom(
             .height(heightDp),
     ) {
         if (atom.isSpace || atom.text.isEmpty()) return@Canvas
+        val visibleMaskAlpha = visibleAmllMaskAlpha(
+            animated = maskAlpha.value,
+            active = active,
+            androidPresentation = androidPresentation,
+        )
+        val brightMaskAlpha = visibleMaskAlpha.brightAlpha.toFloat()
+        val darkMaskAlpha = visibleMaskAlpha.darkAlpha.toFloat()
         // Future and completed atoms have deterministic terminal frames. Subscribing every atom
         // in the song to the 60 Hz playback position forced off-screen canvases to redraw.
         val livePositionMs = if (active || previousActive) {
