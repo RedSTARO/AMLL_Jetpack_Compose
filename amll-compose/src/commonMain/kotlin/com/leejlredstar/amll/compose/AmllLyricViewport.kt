@@ -112,6 +112,15 @@ private val AmllCssEase = CubicBezierEasing(0.25f, 0.10f, 0.25f, 1.00f)
 internal class AmllViewportRuntime(
     val engine: AmllPlayerEngine,
 ) {
+    /** The newest engine frame. Not snapshot state: it is consulted, never observed. */
+    var latestFrame: AmllEngineFrame = engine.currentFrame()
+
+    /** Index of the active group, written when it changes. Composition reads this. */
+    val activeGroupIndex = mutableStateOf<Int?>(null)
+
+    /** Interlude dots target, written when it changes. Composition reads this. */
+    val interludeDotsTarget = mutableStateOf<AmllInterludeDotsTarget?>(null)
+
     var scrollOffsetPx = 0.0
     var scrollMinPx = 0.0
     var scrollMaxPx = 0.0
@@ -127,6 +136,7 @@ internal class AmllViewportRuntime(
     var knownGroupHeightsPx: MutableList<Int?> = mutableListOf()
     var knownGroupWidthsPx: MutableList<Int?> = mutableListOf()
     var renderedGroupHeightsPx: MutableList<Int> = mutableListOf()
+    var renderedGroupWidthsPx: MutableList<Int> = mutableListOf()
     var interludeDotsMeasurementAvailable = false
     var lastViewportWidthPx = -1
     var lastViewportHeightPx = -1
@@ -180,6 +190,7 @@ internal class AmllViewportRuntime(
         knownGroupHeightsPx = MutableList(count) { null }
         knownGroupWidthsPx = MutableList(count) { null }
         renderedGroupHeightsPx = MutableList(count) { 0 }
+        renderedGroupWidthsPx = MutableList(count) { 0 }
         hasPerformedInitialLayout = false
         interludeDotsMeasurementAvailable = false
     }
@@ -520,10 +531,78 @@ fun AmllLyricViewport(
     }
     val runtime = remember(engine) { AmllViewportRuntime(engine) }
     val hasDuetLine = remember(document.lines) { document.lines.any(AmllLyricLine::isDuet) }
-    val frameState = remember(engine) { mutableStateOf(engine.currentFrame()) }
-    var frame by frameState
     val hoverTracker = remember(document.groups) { AmllHoverTracker() }
     val blurEffects = remember { AmllBlurEffectCache() }
+    val groupPresentations = remember(
+        document.groups,
+        alwaysPostpositionBackground,
+        parameters.springEnabled,
+    ) {
+        document.groups.mapIndexed { index, group ->
+            AmllGroupPresentationState(
+                index = index,
+                initial = amllFallbackGroupFrame(
+                    index = index,
+                    shouldBackgroundBeFirst =
+                        !alwaysPostpositionBackground && group.isBackgroundFirst,
+                    springEnabled = parameters.springEnabled,
+                ),
+            )
+        }
+    }
+
+    /**
+     * `renderStyles()` for every group: push the engine frame into per-group state, writing
+     * only what changed. Runs once per frame from the frame loop, never from composition.
+     */
+    fun publishFrame(newFrame: AmllEngineFrame) {
+        runtime.latestFrame = newFrame
+        val viewportHeightPx = runtime.lastViewportHeightPx.toDouble()
+        val overscanPx = engine.layoutState.overscanPx
+        val heights = runtime.renderedGroupHeightsPx
+        groupPresentations.forEachIndexed { index, presentation ->
+            val groupFrame = newFrame.groups.getOrNull(index) ?: return@forEachIndexed
+            presentation.update(
+                frame = groupFrame,
+                placed = isAmllGroupWithinOverscan(
+                    topPx = roundToAmllPrecision(groupFrame.topPx, scale = 10.0),
+                    heightPx = (heights.getOrNull(index) ?: 0).toDouble(),
+                    viewportHeightPx = viewportHeightPx,
+                    overscanPx = overscanPx,
+                ),
+            )
+        }
+        val activeIndex = newFrame.groups.indexOfFirst { it.isActive }.takeIf { it >= 0 }
+        if (runtime.activeGroupIndex.value != activeIndex) {
+            runtime.activeGroupIndex.value = activeIndex
+        }
+        if (runtime.interludeDotsTarget.value != newFrame.interludeDotsTarget) {
+            runtime.interludeDotsTarget.value = newFrame.interludeDotsTarget
+        }
+        /*
+         * ResizeObserver: a detached DOM group reports no size until it first enters the overscan
+         * band, and the base layout keeps using viewportHeight / 5 for it until then. The spring
+         * scroll is what carries groups into the band, so this check has to run per frame — the
+         * measure pass no longer does, and registering late would move every line below the
+         * group on the next layout.
+         */
+        if (runtime.hasPerformedInitialLayout) {
+            var sizesRegistered = false
+            newFrame.groups.forEachIndexed { index, groupFrame ->
+                if (runtime.knownGroupHeightsPx.getOrNull(index) != null) return@forEachIndexed
+                val renderedHeight = heights.getOrNull(index) ?: return@forEachIndexed
+                if (renderedHeight <= 0) return@forEachIndexed
+                val inSight = groupFrame.topPx <= viewportHeightPx + overscanPx &&
+                    groupFrame.topPx >= -overscanPx
+                if (inSight) {
+                    runtime.knownGroupHeightsPx[index] = renderedHeight
+                    runtime.knownGroupWidthsPx[index] = runtime.renderedGroupWidthsPx.getOrNull(index)
+                    sizesRegistered = true
+                }
+            }
+            if (sizesRegistered) runtime.requestLayout(sync = true, force = false)
+        }
+    }
     var inactiveWordPositionMs by remember(engine) {
         mutableLongStateOf(sampledPositionMs)
     }
@@ -660,13 +739,15 @@ fun AmllLyricViewport(
         }
     }
 
-    // Spring motion follows every platform frame. The 60 Hz lyric clock above must never
-    // throttle this loop, and Desktop may provide frames faster than the display refresh rate.
-    LaunchedEffect(engine) {
+    // Spring motion follows every platform frame, whatever cadence the host gives the lyric
+    // clock above.
+    LaunchedEffect(engine, groupPresentations) {
         var previousFrameNanos = withFrameNanos { it }
-        frame = engine.update(
-            deltaMs = 0.0,
-            isPageVisible = isPageVisible,
+        publishFrame(
+            engine.update(
+                deltaMs = 0.0,
+                isPageVisible = isPageVisible,
+            ),
         )
         while (true) {
             val currentFrameNanos = withFrameNanos { it }
@@ -675,15 +756,17 @@ fun AmllLyricViewport(
                 currentFrameNanos = currentFrameNanos,
             )
             previousFrameNanos = currentFrameNanos
-            frame = engine.update(
-                deltaMs = deltaMs,
-                isPageVisible = isPageVisible,
+            publishFrame(
+                engine.update(
+                    deltaMs = deltaMs,
+                    isPageVisible = isPageVisible,
+                ),
             )
             if (hoverTracker.hoveredIndex.value != null) {
                 hoverTracker.reconcile(
                     viewportWidthPx = runtime.lastViewportWidthPx,
                     viewportHeightPx = runtime.lastViewportHeightPx,
-                    groupTopsPx = frame.groups.map { it.topPx },
+                    groupTopsPx = runtime.latestFrame.groups.map { it.topPx },
                     groupHeightsPx = runtime.renderedGroupHeightsPx,
                 )
             }
@@ -698,35 +781,8 @@ fun AmllLyricViewport(
         onInteraction()
     }
 
-    val activeKeyboardIndex by remember(frameState) {
-        derivedStateOf {
-            frameState.value.groups.indexOfFirst { it.isActive }.takeIf { it >= 0 }
-        }
-    }
-    val interludeDotsTarget by remember(frameState) {
-        derivedStateOf { frameState.value.interludeDotsTarget }
-    }
-    val groupPresentations = remember(
-        frameState,
-        document.groups,
-        alwaysPostpositionBackground,
-        parameters.springEnabled,
-        hoverTracker,
-    ) {
-        document.groups.mapIndexed { index, group ->
-            AmllGroupPresentationState(
-                frameState = frameState,
-                index = index,
-                fallback = amllFallbackGroupFrame(
-                    index = index,
-                    shouldBackgroundBeFirst =
-                        !alwaysPostpositionBackground && group.isBackgroundFirst,
-                    springEnabled = parameters.springEnabled,
-                ),
-                hoveredIndex = hoverTracker.hoveredIndex,
-            )
-        }
-    }
+    val activeKeyboardIndex by runtime.activeGroupIndex
+    val interludeDotsTarget by runtime.interludeDotsTarget
     val resolvedKeyboardIndex = resolveAmllRovingFocusTargetIndex(
         groupCount = document.groups.size,
         keyboardIndex = keyboardIndex,
@@ -803,7 +859,7 @@ fun AmllLyricViewport(
                     if (timeUpdate.shouldLayout) {
                         runtime.requestLayout()
                     }
-                    frame = engine.currentFrame()
+                    publishFrame(engine.currentFrame())
                 }
             },
         )
@@ -1003,7 +1059,7 @@ fun AmllLyricViewport(
                                     position = pointer.position,
                                     viewportWidthPx = runtime.lastViewportWidthPx,
                                     viewportHeightPx = runtime.lastViewportHeightPx,
-                                    groupTopsPx = frame.groups.map { it.topPx },
+                                    groupTopsPx = runtime.latestFrame.groups.map { it.topPx },
                                     groupHeightsPx = runtime.renderedGroupHeightsPx,
                                 ),
                             )
@@ -1149,6 +1205,7 @@ fun AmllLyricViewport(
         }
         groupPlaceables.forEachIndexed { index, placeable ->
             runtime.renderedGroupHeightsPx[index] = placeable.height
+            runtime.renderedGroupWidthsPx[index] = placeable.width
         }
         val dotPlaceable = dotMeasurable.measure(
             Constraints(minWidth = 0, maxWidth = width, minHeight = 0, maxHeight = height),
@@ -1192,7 +1249,7 @@ fun AmllLyricViewport(
             groupPlaceables.forEachIndexed { index, placeable ->
                 val knownHeight = runtime.knownGroupHeightsPx[index]
                 val heightForSight = knownHeight ?: 0
-                val topPx = frame.groups.getOrNull(index)?.topPx ?: 0.0
+                val topPx = runtime.latestFrame.groups.getOrNull(index)?.topPx ?: 0.0
                 val isInSight =
                     topPx <= height + heightForSight + overscanPx &&
                         topPx >= -heightForSight - overscanPx
@@ -1214,7 +1271,7 @@ fun AmllLyricViewport(
             }
         }
 
-        var localFrame = frame
+        var localFrame = runtime.latestFrame
         if (runtime.hasPendingLayoutForMeasure()) {
             val result = engine.layout(
                 AmllLayoutInput(
@@ -1257,6 +1314,7 @@ fun AmllLyricViewport(
             runtime.forceNextLayout = false
             runtime.hasPerformedInitialLayout = true
             localFrame = engine.currentFrame()
+            runtime.latestFrame = localFrame
         }
 
         layout(width, height) {
@@ -1277,27 +1335,9 @@ fun AmllLyricViewport(
             } else {
                 dotPlaceable.place(0, height + dotPlaceable.height)
             }
-            groupPlaceables.forEachIndexed { index, placeable ->
-                // LyricLineGroup.renderStyles serializes Y with toFixed(1).
-                val top = roundToAmllPrecision(
-                    localFrame.groups.getOrNull(index)?.topPx ?: 0.0,
-                    scale = 10.0,
-                )
-                if (
-                    !isAmllGroupWithinOverscan(
-                        topPx = top,
-                        heightPx = placeable.height.toDouble(),
-                        viewportHeightPx = height.toDouble(),
-                        overscanPx = engine.layoutState.overscanPx,
-                    )
-                ) {
-                    return@forEachIndexed
-                }
-                val integralTop = floor(top).toInt()
-                placeable.placeRelativeWithLayer(0, integralTop) {
-                    translationY = (top - integralTop).toFloat()
-                }
-            }
+            // Every group sits at the origin. Its own layer carries the spring-driven Y and
+            // whether it is drawn at all, so a frame touches layer properties, never this layout.
+            groupPlaceables.forEach { placeable -> placeable.placeRelative(0, 0) }
         }
     }
 
@@ -1366,7 +1406,6 @@ private fun AmllLyricGroupContent(
     val isActive by presentation.isActive
     val renderMode by presentation.renderMode
     val animateMaskAlpha by presentation.animateMaskAlpha
-    val hovered by presentation.hovered
     val opacityTarget by presentation.opacity
     val blurTarget by presentation.blurPx
     var pressed by remember { mutableStateOf(false) }
@@ -1398,20 +1437,6 @@ private fun AmllLyricGroupContent(
         animationSpec = transitionSpec,
         label = "amll-group-blur-${group.id}",
     )
-    val targetBackgroundColor = when {
-        pressed -> Color.White.copy(alpha = 0.019607844f)
-        hovered -> Color.White.copy(alpha = 0.06666667f)
-        else -> Color.Transparent
-    }
-    val backgroundColor = animateColorAsState(
-        targetValue = targetBackgroundColor,
-        animationSpec = if (parameters.transitionDurationMs == 0) {
-            snap()
-        } else {
-            tween(250, easing = AmllCssEase)
-        },
-        label = "amll-group-background-${group.id}",
-    )
     val renderedBackgroundWrapperOpacity = animateFloatAsState(
         targetValue = if (isActive || !isPlaying) 1f else 0f,
         animationSpec = if (parameters.transitionDurationMs == 0) {
@@ -1423,20 +1448,20 @@ private fun AmllLyricGroupContent(
     )
     val wrapperModifier = Modifier
         .fillMaxWidth()
-        // One offscreen layer carries both `opacity` and `filter: blur()`, in CSS order: the
-        // filter renders the element, then the alpha applies as it is composited.
+        // LyricLineGroup detaches its node outside the overscan band. Skipping drawContent here
+        // skips the layer below it, so an off-screen group costs neither a draw nor a blur pass.
+        .drawWithContent { if (presentation.placed.value) drawContent() }
+        // One layer carries the spring Y (`transform: translateY`, serialized to one decimal
+        // like renderStyles), `opacity` and `filter: blur()`, in CSS order: the filter renders
+        // the element, then the alpha applies as it is composited.
         .graphicsLayer {
+            translationY = roundToAmllPrecision(presentation.topPx.doubleValue, scale = 10.0)
+                .toFloat()
             alpha = renderedOpacity.value
             // CSS `blur(Npx)` uses logical CSS pixels. Compose dp is the corresponding logical
             // unit; converting N from device px first made Native blur too weak on HiDPI screens.
             renderEffect = blurEffects.effectFor(renderedBlurPx.value.dp.toPx())
             clip = false
-        }
-        .drawBehind {
-            val color = backgroundColor.value
-            if (color.alpha > 0f) {
-                drawOutline(shape.createOutline(size, layoutDirection, this), color)
-            }
         }
         .drawWithContent {
             drawContent()
@@ -1509,7 +1534,7 @@ private fun AmllLyricGroupContent(
                         .fillMaxWidth()
                         .graphicsLayer {
                             val scale = roundToAmllPrecision(
-                                value = presentation.mainScale.value,
+                                value = presentation.mainScale.doubleValue,
                                 scale = 10_000.0,
                             ).toFloat()
                             scaleX = scale
@@ -1535,9 +1560,9 @@ private fun AmllLyricGroupContent(
                         // `.bgWrapper` has z-index:-1, including while its slide overlaps main.
                         .zIndex(-1f)
                         .graphicsLayer {
-                            val slideYPercent = presentation.backgroundSlideYPercent.value
+                            val slideYPercent = presentation.backgroundSlideYPercent.doubleValue
                             val wrapperScale = roundToAmllPrecision(
-                                value = presentation.backgroundWrapperScale.value,
+                                value = presentation.backgroundWrapperScale.doubleValue,
                                 scale = 1_000.0,
                             ).toFloat()
                             val serializedSlide = roundToAmllPrecision(
@@ -1586,7 +1611,7 @@ private fun AmllLyricGroupContent(
                             .fillMaxWidth()
                             .graphicsLayer {
                                 val lineScale = roundToAmllPrecision(
-                                    value = presentation.backgroundScale.value,
+                                    value = presentation.backgroundScale.doubleValue,
                                     scale = 10_000.0,
                                 ).toFloat()
                                 scaleX = lineScale
@@ -1621,7 +1646,7 @@ private fun AmllLyricGroupContent(
             ),
         )
         val activeProgress =
-            (1.0 - abs(presentation.backgroundSlideYPercent.value) / 80.0).coerceIn(0.0, 1.0)
+            (1.0 - abs(presentation.backgroundSlideYPercent.doubleValue) / 80.0).coerceIn(0.0, 1.0)
         val postpositionBackgroundInFlow =
             background != null && !shouldBackgroundBeFirst && postpositionIsActive
         val measuredHeight = when {
