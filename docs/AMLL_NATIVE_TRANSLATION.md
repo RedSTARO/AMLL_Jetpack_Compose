@@ -173,6 +173,24 @@
    Windows/JVM 当前在创建组合时读取系统值但不订阅后续注册表变化，macOS/Linux JVM
    返回默认关闭。平台没有等价 API 时采用静态或默认样式。
 
+10. **每帧更新只经过 draw phase。** `LyricLineGroup.renderStyles()` 每个动画帧把
+    transform / opacity / filter 直接写到 DOM 节点，浏览器不会因此重跑脚本或布局。Compose
+    侧由 `AmllGroupPresentationState` 把引擎帧按变化频率拆开：弹簧驱动的 `topPx`、缩放、
+    背景滑动只在 `graphicsLayer` / `drawBehind` / 测量块中读取，活跃状态、透明度与模糊目标
+    经 `derivedStateOf` 进入组合。一次弹簧步进只更新图层属性，不重组任何歌词组。每组的
+    `opacity` 与 `filter: blur()` 合并为一个离屏图层，模糊效果按 0.25 px 量化并缓存。
+11. **overscan 之外不放置。** 上游在 overscan 带外分离 DOM 节点；Compose 在视口
+    `Layout` 中对同一带外的组跳过 `place`，于是它们既不绘制也不命中测试，模糊图层也不会
+    渲染。全部组仍被测量，引擎布局仍拿到完整高度。
+12. **静态封面模糊只渲染一次。** Chromium 会缓存内容不变的滤镜图层，Compose 的
+    `RenderEffect` 则在每次绘制时重算。`AmllBackground` 在封面加载后把裁剪、饱和度与高斯
+    模糊以 1/4 分辨率渲染进一张位图并复用；只有动态封面视频保留实时模糊。Android 12 以下
+    没有 `RenderEffect`，改用多级双线性降采样近似，比此前的完全无模糊更接近上游。
+13. **hover 只随指针移动。** Chromium 在每帧开始时按当前布局重算 `:hover`，静止的光标
+    会点亮被弹簧滚动送到其下的任何一行；在全屏播放页上那几乎总是活动行。这里的
+    `.lyricLineWrapper:hover` 只在真实指针移动时锁定到指针所在的组，组被滚动带离后立即
+    释放，Compose 在重新布局后重发的同位置合成 Move 事件被忽略。这是有意的偏离。
+
 ## 许可证
 
 上述由 AMLL 翻译或改编的 Kotlin 文件使用
