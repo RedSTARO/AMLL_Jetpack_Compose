@@ -487,6 +487,14 @@ internal fun shouldShowAmllFocusOutline(
     focusVisible: Boolean,
 ): Boolean = focusVisible && renderedIndex == focusedIndex
 
+/**
+ * The scrolling lyric list.
+ *
+ * [onSeek] receives the start time of a line the user clicked, tapped, or activated from the
+ * keyboard. [onInteraction] is the host's cue to show its controls; it fires for a click or tap on
+ * the space between lines and for keyboard input, never for a seek: choosing a line is an action
+ * on the song, not a request for the console.
+ */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun AmllLyricViewport(
@@ -675,7 +683,6 @@ fun AmllLyricViewport(
         onSeek(mediaId, line.sourceStartTimeMs)
         resetScroll()
         invalidateLayout(sync = true, force = false)
-        onInteraction()
     }
 
     fun launchInertia(rawInitialSpeedPxPerMs: Double) {
@@ -883,6 +890,7 @@ fun AmllLyricViewport(
         .pointerInput(onInteraction, touchClickThresholdPx) {
             var activePointerId: PointerId? = null
             var startPointerPosition = Offset.Zero
+            var pressedOnLine = false
             var exceededTapThreshold = false
 
             awaitPointerEventScope {
@@ -897,6 +905,16 @@ fun AmllLyricViewport(
                         if (down != null) {
                             activePointerId = down.id
                             startPointerPosition = down.position
+                            // A click that lands on a line is a seek, handled by the line
+                            // itself; only a click on the space between lines is an
+                            // interaction with the page.
+                            pressedOnLine = pickAmllTouchClickGroupIndex(
+                                position = down.position,
+                                viewportWidthPx = runtime.lastViewportWidthPx,
+                                viewportHeightPx = runtime.lastViewportHeightPx,
+                                groupTopsPx = runtime.latestFrame.groups.map { it.topPx },
+                                groupHeightsPx = runtime.renderedGroupHeightsPx,
+                            ) != null
                             exceededTapThreshold = false
                         }
                         continue
@@ -911,7 +929,7 @@ fun AmllLyricViewport(
                         thresholdPx = touchClickThresholdPx,
                     )
                     if (!change.pressed && change.previousPressed) {
-                        if (!exceededTapThreshold) {
+                        if (!exceededTapThreshold && !pressedOnLine) {
                             onInteraction()
                         }
                         activePointerId = null
