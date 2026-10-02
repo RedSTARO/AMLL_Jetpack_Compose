@@ -87,6 +87,15 @@ private val AmllPunctuationEndings =
     setOf(',', '.', ';', ':', '!', '?', '，', '。', '；', '：', '！', '？', '、', '）', '】',
         '》', '」', '』', '’', '”', ')', '[', ']', '}', '>', '~', '…')
 
+/** Marks a line may not begin with: closing punctuation belongs to the character before it. */
+private val AmllNoLineStart =
+    setOf(',', '.', ';', ':', '!', '?', ')', ']', '}', '，', '。', '、', '；', '：', '！', '？',
+        '）', '］', '｝', '」', '』', '】', '〕', '〉', '》', '〗', '〙', '〛', '’', '”', '…', '‥', '・')
+
+/** Marks a line may not end with: opening brackets and quotes belong to what follows them. */
+private val AmllNoLineEnd =
+    setOf('(', '[', '{', '（', '［', '｛', '「', '『', '【', '〔', '〈', '《', '〖', '〘', '〚', '‘', '“')
+
 internal data class AmllEmphasisFrame(
     val scale: Double,
     val offsetXEm: Double,
@@ -1008,12 +1017,53 @@ internal fun chunkAndSplitAmllLyricWords(
     return result
 }
 
+/**
+ * [nodes] with every pair a line may not be broken between joined into one node, and for each
+ * joined node the index of its first node in [nodes].
+ *
+ * A browser applies these rules (UAX #14) to the inline flow the original renders in, so a comma
+ * never starts a row there: the character before it moves down with it, or, when it follows the
+ * row's only word, it stays on that row past the edge. Both passes below break only between the
+ * joined nodes, which gives the same result. Spaces are never joined: a break at a space stays a
+ * break at a space.
+ */
+internal fun joinAmllNoBreakPairs(nodes: List<AmllBalanceNode>): Pair<List<AmllBalanceNode>, IntArray> {
+    val joined = ArrayList<AmllBalanceNode>(nodes.size)
+    val firstIndex = ArrayList<Int>(nodes.size)
+    nodes.forEachIndexed { index, node ->
+        val previous = joined.lastOrNull()
+        val inseparable = previous != null && !node.isSpace && !previous.isSpace && (
+            node.text.firstOrNull() in AmllNoLineStart || previous.text.lastOrNull() in AmllNoLineEnd
+            )
+        if (inseparable) {
+            joined[joined.lastIndex] = AmllBalanceNode(
+                widthPx = previous!!.widthPx + node.widthPx,
+                text = previous.text + node.text,
+                isSpace = false,
+            )
+        } else {
+            joined += node
+            firstIndex += index
+        }
+    }
+    return joined to firstIndex.toIntArray()
+}
+
 internal fun calculateAmllBalancedBreaks(
     nodes: List<AmllBalanceNode>,
     containerWidthPx: Double,
     cjkBoundaries: Set<Int> = inferAmllCjkBoundaries(
         nodes.joinToString(separator = "") { it.text },
     ),
+): Set<Int> {
+    val (joined, firstIndex) = joinAmllNoBreakPairs(nodes)
+    return balancedBreaksBetween(joined, containerWidthPx, cjkBoundaries).mapTo(HashSet()) { firstIndex[it] }
+}
+
+private fun balancedBreaksBetween(
+    nodes: List<AmllBalanceNode>,
+    containerWidthPx: Double,
+    cjkBoundaries: Set<Int>,
 ): Set<Int> {
     val count = nodes.size
     if (count == 0 || containerWidthPx <= 0.0) return emptySet()
@@ -1080,6 +1130,14 @@ internal fun calculateAmllBalancedBreaks(
  * atomic inline boxes and wrap in source order without the dynamic-programming balance pass.
  */
 internal fun calculateAmllNativeFlowBreaks(
+    nodes: List<AmllBalanceNode>,
+    containerWidthPx: Double,
+): Set<Int> {
+    val (joined, firstIndex) = joinAmllNoBreakPairs(nodes)
+    return nativeFlowBreaksBetween(joined, containerWidthPx).mapTo(HashSet()) { firstIndex[it] }
+}
+
+private fun nativeFlowBreaksBetween(
     nodes: List<AmllBalanceNode>,
     containerWidthPx: Double,
 ): Set<Int> {

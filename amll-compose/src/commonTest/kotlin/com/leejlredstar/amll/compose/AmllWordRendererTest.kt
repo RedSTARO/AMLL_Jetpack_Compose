@@ -856,6 +856,46 @@ class AmllWordRendererTest {
         )
     }
 
+    private fun cjk(text: String, width: Double = 10.0) =
+        text.map { AmllBalanceNode(width, it.toString(), false) }
+
+    @Test
+    fun aCommaNeverStartsARowTheCharacterBeforeItMovesDownWithIt() {
+        // 就像一个， at four characters a row: the comma alone on the second row was the bug.
+        assertEquals(setOf(3), calculateAmllNativeFlowBreaks(cjk("就像一个，"), 40.0))
+        // The balanced pass may split 就像 / 一个， or 就像一 / 个，; it may not split before the comma.
+        val balanced = calculateAmllBalancedBreaks(cjk("就像一个，"), 40.0, cjkBoundaries = setOf(1, 2, 3, 4))
+        assertTrue(balanced.isNotEmpty())
+        assertTrue(4 !in balanced, "a row starts with the comma: $balanced")
+    }
+
+    @Test
+    fun aCommaAfterTheRowsOnlyWordStaysOnThatRow() {
+        val nodes = listOf(AmllBalanceNode(30.0, "Forever", false), AmllBalanceNode(5.0, ",", false))
+
+        assertTrue(calculateAmllNativeFlowBreaks(nodes, 30.0).isEmpty())
+        assertTrue(calculateAmllBalancedBreaks(nodes, 30.0, cjkBoundaries = emptySet()).isEmpty())
+    }
+
+    @Test
+    fun anOpeningQuoteNeverEndsARow() {
+        // 说「好」了 at two characters a row: 「 goes down with 好 instead of ending the first row,
+        // and 」 stays with 好, so the quotation is one unit that overflows its row.
+        assertEquals(setOf(1, 4), calculateAmllNativeFlowBreaks(cjk("说「好」了"), 20.0))
+    }
+
+    @Test
+    fun aBreakAtASpaceIsStillABreakAtASpace() {
+        val nodes = listOf(
+            AmllBalanceNode(40.0, "word", false),
+            AmllBalanceNode(10.0, " ", true),
+            AmllBalanceNode(10.0, "(", false),
+            AmllBalanceNode(30.0, "aside", false),
+        )
+
+        assertEquals(setOf(2), calculateAmllNativeFlowBreaks(nodes, 50.0))
+    }
+
     @Test
     fun duetRowsUsePhysicalRightOriginIndependentOfLayoutDirection() {
         assertEquals(0, amllPhysicalRowStartX(300, 120, isDuet = false))
