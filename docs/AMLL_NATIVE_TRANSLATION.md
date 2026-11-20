@@ -73,7 +73,7 @@
 | 同上：`pause`、`resume`、`update` | `AmllPlayerEngine.setPlaying`、`update` | Compose 帧循环提供上游 `update(delta)` 的时间增量。 |
 | core `src/lyric-player/base/group.ts`：`setTransform`、`setLineTransformations`、`update` | `computeAmllGroupPresentation`、`AmllGroupTarget`、`AmllGroupFrame` | 主/背景行缩放、背景 `±80%` 滑入和延迟弹簧状态。 |
 | core `src/lyric-player/dom/lyric-group.ts`：`addBgLine`、`renderStyles` | `AmllLyricGroupContent`、`AmllGroupFrame.backgroundSlideYPercent`、`backgroundWrapperScale` | 背景行前置/后置、活动时进入流式布局、隐藏时缩放到 `0.8` 的结构映射。 |
-| core `src/lyric-player/base/scroll.ts`：`clampPlayerScrollOffset`、`resetPlayerScrollState`、`attachPlayerScrollHandlers` | `AmllLyricViewport.kt`：`AmllViewportRuntime.clampScroll`、`resetScroll` 及 pointer / wheel 处理；`wasmJsMain/AmllPlatformEvents.wasm.kt`：原生 DOM wheel 捕获 | 保留点击移动阈值 `10 px`、惯性停止阈值和 `0.95 ** (dt / 16)` 摩擦公式；Web 在 CanvasKit 前读取真实 `WheelEvent.deltaMode`，PIXEL 直加并同步布局，LINE/PAGE 乘 `50` 并异步布局；5 秒自动复位由视口帧循环执行。 |
+| core `src/lyric-player/base/scroll.ts`：`clampPlayerScrollOffset`、`resetPlayerScrollState`、`attachPlayerScrollHandlers` | `AmllLyricViewport.kt`：`AmllViewportRuntime.clampScroll`、`resetScroll` 及 pointer / wheel 处理；`wasmJsMain/AmllPlatformEvents.wasm.kt`：原生 DOM wheel 捕获 | 保留点击移动阈值 `10 px`、惯性停止阈值和 `0.95 ** (dt / 16)` 摩擦公式；Compose 已消费的抬手事件表示手势被取消或接管，不触发点击跳转或惯性滚动。Web 在 CanvasKit 前读取真实 `WheelEvent.deltaMode`，PIXEL 直加并同步布局，LINE/PAGE 乘 `50` 并异步布局；5 秒自动复位由视口帧循环执行。 |
 
 ## 字级渲染、换行与间奏
 

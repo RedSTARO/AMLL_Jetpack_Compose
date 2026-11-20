@@ -2,12 +2,46 @@ package com.leejlredstar.amll.compose
 
 import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.runtime.snapshots.SnapshotStateObserver
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.PointerId
+import androidx.compose.ui.input.pointer.PointerInputChange
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class AmllLyricViewportRuntimeTest {
+    @Test
+    fun systemCancelAtTheBottomOfAWideViewportIsNotATap() {
+        val start = Offset(580f, 776f)
+        val lastPosition = Offset(581f, 770f)
+        val cancelled = touchUp(lastPosition).apply { consume() }
+
+        assertEquals(AmllTouchEnd.CANCEL, amllTouchEnd(cancelled, start, false, 10.0))
+        assertEquals(AmllTouchEnd.CANCEL, amllTouchEnd(cancelled, start, true, 10.0))
+        // The same motion ending in a real up is still an intentional lyric tap.
+        assertEquals(AmllTouchEnd.TAP, amllTouchEnd(touchUp(lastPosition), start, false, 10.0))
+    }
+
+    @Test
+    fun aReleasedSwipeIsADragEvenIfTheLastSampleReturnsToItsStart() {
+        val start = Offset(580f, 776f)
+
+        assertEquals(AmllTouchEnd.DRAG, amllTouchEnd(touchUp(Offset(581f, 755f)), start, false, 10.0))
+        assertEquals(AmllTouchEnd.DRAG, amllTouchEnd(touchUp(start), start, true, 10.0))
+    }
+
+    private fun touchUp(position: Offset) = PointerInputChange(
+        id = PointerId(0),
+        uptimeMillis = 100L,
+        position = position,
+        pressed = false,
+        previousUptimeMillis = 90L,
+        previousPosition = position,
+        previousPressed = true,
+        isInitiallyConsumed = false,
+    )
+
     @Test
     fun layoutRequestInvalidatesTheMeasureObserverWhenTheEngineFrameDoesNotChange() {
         val engine = AmllPlayerEngine(

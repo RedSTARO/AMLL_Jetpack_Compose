@@ -68,7 +68,10 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.PointerId
+import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.changedToDown
+import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.layout
@@ -263,6 +266,27 @@ internal fun hasAmllPointerExceededTapThreshold(
             end = current,
             thresholdPx = thresholdPx,
         )
+
+internal enum class AmllTouchEnd {
+    CANCEL,
+    TAP,
+    DRAG,
+}
+
+internal fun amllTouchEnd(
+    change: PointerInputChange,
+    start: Offset,
+    exceededTapThreshold: Boolean,
+    thresholdPx: Double,
+): AmllTouchEnd? = when {
+    // Compose represents ACTION_CANCEL as an already consumed up at the last known position.
+    // The system can take over a home swipe before the app sees any movement past tap slop.
+    change.isConsumed -> AmllTouchEnd.CANCEL
+    !change.changedToUp() -> null
+    hasAmllPointerExceededTapThreshold(exceededTapThreshold, start, change.position, thresholdPx) ->
+        AmllTouchEnd.DRAG
+    else -> AmllTouchEnd.TAP
+}
 
 internal fun computeAmllTouchScrollOffset(
     startScrollOffsetPx: Double,
@@ -955,7 +979,7 @@ fun AmllLyricViewport(
                 }
             }
         }
-        .pointerInput(document.groups, mediaId, touchClickThresholdPx) {
+        .pointerInput(runtime, touchClickThresholdPx) {
             var activeTouchId: PointerId? = null
             var startScrollOffsetPx = 0.0
             var startTouchPosition = Offset.Zero
@@ -969,12 +993,11 @@ fun AmllLyricViewport(
                     val event = awaitPointerEvent(PointerEventPass.Initial)
                     if (activeTouchId == null) {
                         val down = event.changes.firstOrNull { change ->
-                            change.type == PointerType.Touch &&
-                                change.pressed &&
-                                !change.previousPressed
+                            change.type == PointerType.Touch && change.changedToDown()
                         }
                         if (down != null && beginScrollHandler()) {
                             activeTouchId = down.id
+                            inertiaGeneration += 1
                             runtime.isUserScrolling = true
                             startScrollOffsetPx = runtime.scrollOffsetPx
                             startTouchPosition = down.position
@@ -990,6 +1013,41 @@ fun AmllLyricViewport(
 
                     val change = event.changes.firstOrNull { it.id == activeTouchId }
                         ?: continue
+                    val end = amllTouchEnd(
+                        change = change,
+                        start = startTouchPosition,
+                        exceededTapThreshold = exceededTapThreshold,
+                        thresholdPx = touchClickThresholdPx,
+                    )
+                    if (end != null) {
+                        activeTouchId = null
+                        if (end == AmllTouchEnd.CANCEL || !beginScrollHandler()) {
+                            runtime.isUserScrolling = false
+                            invalidateLayout(sync = true, force = true)
+                        } else {
+                            change.consume()
+                            if (end == AmllTouchEnd.TAP) {
+                                val clickedIndex = pickAmllTouchClickGroupIndex(
+                                    position = change.position,
+                                    viewportWidthPx = runtime.lastViewportWidthPx,
+                                    viewportHeightPx = runtime.lastViewportHeightPx,
+                                    groupTopsPx = runtime.engine.currentFrame().groups.map {
+                                        it.topPx
+                                    },
+                                    groupHeightsPx = runtime.renderedGroupHeightsPx,
+                                )
+                                runtime.isUserScrolling = false
+                                if (clickedIndex != null) {
+                                    clickGroup(clickedIndex, requestPointerFocus = true)
+                                } else {
+                                    onInteraction()
+                                }
+                            } else {
+                                launchInertia(scrollSpeedPxPerMs)
+                            }
+                        }
+                        continue
+                    }
                     if (event.type == PointerEventType.Move && change.pressed) {
                         exceededTapThreshold = hasAmllPointerExceededTapThreshold(
                             alreadyExceeded = exceededTapThreshold,
@@ -1016,44 +1074,6 @@ fun AmllLyricViewport(
                             lastMoveTimeMs = change.uptimeMillis
                             invalidateLayout(sync = true, force = true)
                         }
-                        continue
-                    }
-
-                    if (!change.pressed && change.previousPressed) {
-                        val allowed = beginScrollHandler()
-                        if (allowed) {
-                            change.consume()
-                            if (
-                                !exceededTapThreshold &&
-                                isAmllTouchClickCandidate(
-                                    start = startTouchPosition,
-                                    end = change.position,
-                                    thresholdPx = touchClickThresholdPx,
-                                )
-                            ) {
-                                val clickedIndex = pickAmllTouchClickGroupIndex(
-                                    position = change.position,
-                                    viewportWidthPx = runtime.lastViewportWidthPx,
-                                    viewportHeightPx = runtime.lastViewportHeightPx,
-                                    groupTopsPx = runtime.engine.currentFrame().groups.map {
-                                        it.topPx
-                                    },
-                                    groupHeightsPx = runtime.renderedGroupHeightsPx,
-                                )
-                                runtime.isUserScrolling = false
-                                if (clickedIndex != null) {
-                                    val index = clickedIndex
-                                    clickGroup(index, requestPointerFocus = true)
-                                } else {
-                                    onInteraction()
-                                }
-                            } else {
-                                launchInertia(scrollSpeedPxPerMs)
-                            }
-                        } else {
-                            runtime.isUserScrolling = false
-                        }
-                        activeTouchId = null
                     }
                 }
             }
