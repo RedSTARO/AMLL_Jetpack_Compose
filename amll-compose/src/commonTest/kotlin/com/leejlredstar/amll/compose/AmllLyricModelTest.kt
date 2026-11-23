@@ -308,6 +308,22 @@ class AmllLyricModelTest {
     }
 
     @Test
+    fun fontSizeLimitScalesTypeAndSpacingWithoutChangingViewportClass() {
+        val defaults = calculateAmllLyricVisualParameters(608f, 830f, reducedMotion = false)
+        val capped = calculateAmllLyricVisualParameters(608f, 830f, reducedMotion = false, maxBaseFontSizeDp = 36f)
+
+        assertEquals(36f, capped.baseFontSizeSp)
+        assertEquals(18f, capped.subLineFontSizeSp)
+        assertEquals(25.2f, capped.backgroundLineFontSizeSp, absoluteTolerance = 0.001f)
+        assertEquals(36f, capped.horizontalPaddingDp)
+        assertEquals(14.4f, capped.lineVerticalPaddingDp, absoluteTolerance = 0.001f)
+        assertEquals(10.8f, capped.lineGapDp, absoluteTolerance = 0.001f)
+        assertEquals(9f, capped.lineCornerRadiusDp)
+        assertEquals(defaults.viewportClass, capped.viewportClass)
+        assertEquals(defaults.lineWidthFraction, capped.lineWidthFraction)
+    }
+
+    @Test
     fun reducedMotionDisablesSpringScrollAndTransitionsOnly() {
         val normal = calculateAmllLyricVisualParameters(900f, 700f, reducedMotion = false)
         val reduced = calculateAmllLyricVisualParameters(900f, 700f, reducedMotion = true)

@@ -378,6 +378,16 @@ fun calculateAmllLyricVisualParameters(
     viewportWidthDp: Float,
     viewportHeightDp: Float,
     reducedMotion: Boolean,
+): AmllLyricVisualParameters = calculateAmllLyricVisualParameters(
+    viewportWidthDp, viewportHeightDp, reducedMotion, maxBaseFontSizeDp = Float.POSITIVE_INFINITY,
+)
+
+/** [maxBaseFontSizeDp] caps the type and its proportional metrics without changing the viewport. */
+fun calculateAmllLyricVisualParameters(
+    viewportWidthDp: Float,
+    viewportHeightDp: Float,
+    reducedMotion: Boolean,
+    maxBaseFontSizeDp: Float,
 ): AmllLyricVisualParameters {
     val width = viewportWidthDp.coerceAtLeast(0f)
     val height = viewportHeightDp.coerceAtLeast(0f)
@@ -386,11 +396,12 @@ fun calculateAmllLyricVisualParameters(
         width <= 1_024f -> AmllLyricViewportClass.COMPACT
         else -> AmllLyricViewportClass.WIDE
     }
-    val baseFontSizeSp = if (width <= 768f) {
-        maxOf(width * 0.08f, 12f)
+    val responsiveFontSizeDp = if (width <= 768f) {
+        width * 0.08f
     } else {
-        maxOf(height * 0.05f, width * 0.025f, 12f)
+        maxOf(height * 0.05f, width * 0.025f)
     }
+    val baseFontSizeSp = responsiveFontSizeDp.coerceIn(12f, maxOf(12f, maxBaseFontSizeDp))
     val horizontalPaddingDp = if (width <= 500f) 20f else baseFontSizeSp
 
     return AmllLyricVisualParameters(
